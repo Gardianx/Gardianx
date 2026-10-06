@@ -10,6 +10,20 @@ or decide what to trade.
 python -m pip install -r requirements.txt
 ```
 
+## Crop button templates
+
+Keep the trading interface visible, then run:
+
+```powershell
+python template_cropper.py
+```
+
+The script captures the full screen once. For each selection window, drag a
+rectangle around the Buy button and press **ENTER** to save it; then select the
+Sell button and press **ENTER**. Press **C** to skip either crop. Saved images
+go into the project's `templates` folder as `buy_button.png` and
+`sell_button.png`. A new successful crop replaces an image with the same name.
+
 ## Run
 
 Save a small reference image of the indicator or button as `indicator.png`.
@@ -35,3 +49,111 @@ The click occurs only when the template is detected and `--execute` is present.
 Use a distinctive, stable template and verify the coordinates on your display;
 screen scaling, window movement, or layout changes can make fixed coordinates
 unsafe. This starter is not a substitute for broker-side safeguards.
+
+## Stateful Buy/Sell logic
+
+`trading_logic.py` provides a `TradingLogic` controller. Give it separate
+`ImageDetector` instances for the Buy and Sell templates plus a `SafeExecutor`.
+Each call to `step()` checks only Buy while not holding, or only Sell while
+holding. A detected button is clicked at the center of its matched image.
+Successful clicks flip `IS_HOLDING`, and the default three-second cooldown
+prevents another scan-and-click action until it expires.
+
+The position state exists only in memory and starts as not holding each time
+the process starts. It represents clicks made by this controller, not broker
+order fills or the actual account position. Reconcile account state separately
+before using this with a live trading interface.
+
+## Run the master agent
+
+After using `template_cropper.py` to save both button templates, specify the
+screen region containing the signals/buttons:
+
+```powershell
+python main_agent.py --region 100 100 900 600
+```
+
+The agent checks the relevant template, then waits 1.5 seconds before checking
+again. Use `--interval` to set a delay from 1 to 2 seconds and `--cooldown` to
+change the minimum time between clicks. By default, it runs in dry-run mode:
+it logs matching actions and updates its simulated in-memory state without
+moving or clicking the mouse. Add `--execute` only after validating the
+templates and coordinates in a paper-trading or other non-live environment.
+Press **ESC** to interrupt the wait or stop before another movement/click.
+
+The ESC listener runs on `pynput`'s background listener thread. Mouse movement
+checks the stop signal in short steps; no software listener can guarantee
+microsecond-level interruption of an operating-system or GUI call.
+
+The master loop also passes both template detections and `IS_HOLDING` to
+`TradingBrain.predict_signal()`. `TradingLogic` permits a predicted BUY or SELL
+only when the matching template is present, the position state allows it, and
+the click cooldown has elapsed. Each scan appends a result to
+`trade_history.csv` through `performance_logger.py`. The current model stub
+always predicts placeholder HOLD with zero confidence, so it will not trigger
+clicks. These model inputs are visual template confidences, not market prices;
+no market data or live asset price is currently collected.
+
+## Trade history CSV
+
+`performance_logger.py` exposes `log_trade(action, price, confidence_score)`.
+It creates `trade_history.csv` beside the module when needed, writes a header,
+and appends timestamped `BUY`, `SELL`, or `HOLD` records. The price field
+accepts either a number or an asset-state description when a price is
+unavailable. Confidence must be a number from 0 to 1.
+
+## Model interface placeholder
+
+`model_brain.py` provides `TradingBrain`, a dependency-free interface for a
+future trained model. It stores a configurable model path and accepts feature
+mappings in `predict_signal()`. Until inference is implemented, predictions
+are explicitly marked placeholders and return `HOLD` with zero confidence;
+they are not connected to the master agent or execution logic. Calling
+`train_model()` raises `NotImplementedError` until model fitting and saving
+are implemented.
+
+## Prepare dataset folders
+
+Run `python setup_dataset.py` to create `dataset/train` and
+`dataset/validation`, each with `buy`, `sell`, and `hold` subfolders. The
+command is safe to rerun and prints the dataset location when complete.
+
+## Preprocess and label chart images
+
+Put chart screenshots in `raw_charts/`, then run:
+
+```powershell
+python dataset_preprocessor.py
+```
+
+For each supported image, drag a box around the chart candles/price action in
+the OpenCV window and press **ENTER** or **SPACE** to accept; press **C** to
+skip that image. Choose a `buy`, `sell`, or `hold` label and a `train` or
+`validation` split in the terminal. The selected crop is resized to 224x224
+and saved in the matching dataset folder. Original images in `raw_charts/` are
+left unchanged. If a destination filename already exists, a numbered filename
+is used instead of overwriting it.
+
+## Train the vision CNN
+
+Install PyTorch and torchvision builds appropriate for your computer
+(CPU-only or CUDA) with:
+
+```powershell
+python -m pip install -r requirements-training.txt
+```
+
+After collecting labeled images in every class for both dataset splits, run:
+
+```powershell
+python train_vision_model.py --epochs 10
+```
+
+The script loads the `dataset/train/` and `dataset/validation/` folders with
+`torchvision.datasets.ImageFolder`, resizes images to 224x224, and trains a
+three-class CNN. It prints per-epoch loss and accuracy and writes model weights
+and class-index metadata to `trading_vision_model.pth`. Override the epoch
+count, batch size, learning rate, dataset paths, output path, or device with
+the corresponding command-line options. The existing dataset folders are
+currently just empty structure; add labeled images to each class before
+training.

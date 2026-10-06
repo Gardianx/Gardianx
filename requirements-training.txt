@@ -1,0 +1,3 @@
+# Install PyTorch and torchvision builds appropriate for your CPU/CUDA platform.
+torch
+torchvision

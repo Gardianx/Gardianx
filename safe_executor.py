@@ -3,11 +3,54 @@
 from datetime import datetime
 import math
 from pathlib import Path
+from threading import Event
 import time
 
 
 class EmergencyStop(RuntimeError):
     """Raised when the user presses ESC."""
+
+
+class KillSwitch:
+    """Monitor ESC on a pynput listener thread and expose a stop event."""
+
+    def __init__(self, *, listener_factory=None, esc_key=None) -> None:
+        self._listener_factory = listener_factory
+        self._esc_key = esc_key
+        self._listener = None
+        self._stop_event = Event()
+
+    def start(self) -> None:
+        if self._listener is not None:
+            raise RuntimeError("Kill switch is already running.")
+        if self._listener_factory is None or self._esc_key is None:
+            from pynput import keyboard
+
+            if self._listener_factory is None:
+                self._listener_factory = keyboard.Listener
+            if self._esc_key is None:
+                self._esc_key = keyboard.Key.esc
+        self._listener = self._listener_factory(on_press=self._on_press)
+        self._listener.start()
+
+    def stop(self) -> None:
+        if self._listener is not None:
+            self._listener.stop()
+            self._listener.join()
+            self._listener = None
+
+    def _on_press(self, key):
+        if key == self._esc_key:
+            self._stop_event.set()
+            return False
+        return None
+
+    def check(self) -> None:
+        if self._stop_event.is_set():
+            raise EmergencyStop("ESC pressed; stopping GUI automation.")
+
+    def wait(self, timeout: float) -> bool:
+        return self._stop_event.wait(timeout)
 
 
 class SafeExecutor:
@@ -20,48 +63,40 @@ class SafeExecutor:
         pyautogui_module=None,
         listener_factory=None,
         esc_key=None,
+        kill_switch: KillSwitch | None = None,
     ) -> None:
         if pyautogui_module is None:
             import pyautogui as pyautogui_module
         self._pyautogui = pyautogui_module
         self._log_path = Path(log_path)
-        self._listener_factory = listener_factory
-        self._esc_key = esc_key
-        self._listener = None
-        self._stop_requested = False
+        self._kill_switch = kill_switch or KillSwitch(
+            listener_factory=listener_factory,
+            esc_key=esc_key,
+        )
         self._previous_pause = None
 
     def __enter__(self):
-        if self._listener_factory is None or self._esc_key is None:
-            from pynput import keyboard
-
-            if self._listener_factory is None:
-                self._listener_factory = keyboard.Listener
-            if self._esc_key is None:
-                self._esc_key = keyboard.Key.esc
-
-        self._listener = self._listener_factory(on_press=self._on_press)
-        self._listener.start()
+        self._kill_switch.start()
         self._previous_pause = self._pyautogui.PAUSE
         self._pyautogui.PAUSE = 0
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
-        if self._listener is not None:
-            self._listener.stop()
-            self._listener.join()
-        if self._previous_pause is not None:
-            self._pyautogui.PAUSE = self._previous_pause
+        try:
+            self._kill_switch.stop()
+        finally:
+            if self._previous_pause is not None:
+                self._pyautogui.PAUSE = self._previous_pause
 
     def _on_press(self, key):
-        if key == self._esc_key:
-            self._stop_requested = True
-            return False
-        return None
+        return self._kill_switch._on_press(key)
 
     def check_kill_switch(self) -> None:
-        if self._stop_requested:
-            raise EmergencyStop("ESC pressed; stopping GUI automation.")
+        self._kill_switch.check()
+
+    def wait_for_stop(self, timeout: float) -> bool:
+        """Wait up to timeout seconds, returning immediately when ESC is pressed."""
+        return self._kill_switch.wait(timeout)
 
     def log_action(self, action: str, x: int, y: int) -> None:
         timestamp = datetime.now().astimezone().isoformat(timespec="seconds")

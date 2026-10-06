@@ -6,6 +6,7 @@ from unittest.mock import Mock
 
 from safe_executor import EmergencyStop, SafeExecutor
 from screen_detector import ImageDetector, Region
+from template_cropper import crop_templates
 
 
 class ScreenDetectorTests(unittest.TestCase):
@@ -108,6 +109,12 @@ class SafeExecutorTests(unittest.TestCase):
         self.pyautogui.moveTo.assert_not_called()
         self.pyautogui.click.assert_not_called()
 
+    def test_escape_interrupts_wait(self):
+        with self.executor:
+            self.assertFalse(self.executor.wait_for_stop(0))
+            self.executor._on_press("ESC")
+            self.assertTrue(self.executor.wait_for_stop(10))
+
     def test_escape_during_movement_interrupts_before_click(self):
         original_move = self.pyautogui.moveTo
 
@@ -123,6 +130,68 @@ class SafeExecutorTests(unittest.TestCase):
         self.assertEqual(original_move.call_count, 1)
         self.pyautogui.click.assert_not_called()
         self.assertIn("MOVE_INTERRUPTED | x=20 y=30", self.log_path.read_text(encoding="utf-8"))
+
+
+class TemplateCropperTests(unittest.TestCase):
+    def test_captures_and_saves_buy_and_sell_crops(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            screen = SimpleNamespace(ndim=3, shape=(100, 200, 3))
+            bgr_screen = _FakeImage((100, 200, 3))
+            cv2 = SimpleNamespace(
+                COLOR_RGB2BGR=1,
+                COLOR_RGBA2BGR=2,
+                cvtColor=Mock(return_value=bgr_screen),
+                selectROI=Mock(side_effect=[(10, 20, 30, 15), (60, 40, 25, 12)]),
+                imwrite=Mock(return_value=True),
+                destroyAllWindows=Mock(),
+            )
+            screenshot_provider = Mock(return_value=screen)
+
+            saved = crop_templates(
+                temp_dir,
+                screenshot_provider=screenshot_provider,
+                cv2_module=cv2,
+                numpy_module=SimpleNamespace(asarray=Mock(return_value=screen)),
+            )
+
+            self.assertEqual(
+                saved,
+                [Path(temp_dir) / "buy_button.png", Path(temp_dir) / "sell_button.png"],
+            )
+            self.assertEqual(cv2.imwrite.call_count, 2)
+            self.assertEqual(cv2.selectROI.call_count, 2)
+            screenshot_provider.assert_called_once_with()
+            cv2.destroyAllWindows.assert_called_once_with()
+
+    def test_cancelled_crop_is_not_written(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            screen = SimpleNamespace(ndim=3, shape=(100, 200, 3))
+            cv2 = SimpleNamespace(
+                COLOR_RGB2BGR=1,
+                COLOR_RGBA2BGR=2,
+                cvtColor=Mock(return_value=_FakeImage((100, 200, 3))),
+                selectROI=Mock(side_effect=[(0, 0, 0, 0), (5, 6, 10, 8)]),
+                imwrite=Mock(return_value=True),
+                destroyAllWindows=Mock(),
+            )
+
+            saved = crop_templates(
+                temp_dir,
+                screenshot_provider=Mock(return_value=screen),
+                cv2_module=cv2,
+                numpy_module=SimpleNamespace(asarray=Mock(return_value=screen)),
+            )
+
+            self.assertEqual(saved, [Path(temp_dir) / "sell_button.png"])
+            cv2.imwrite.assert_called_once()
+
+
+class _FakeImage:
+    def __init__(self, shape):
+        self.shape = shape
+
+    def __getitem__(self, crop_slice):
+        return crop_slice
 
 
 if __name__ == "__main__":
