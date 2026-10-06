@@ -25,15 +25,28 @@ class TradingLogic:
         executor: SafeExecutor,
         *,
         cooldown_seconds: float = 3.0,
+        buy_click_target: tuple[int, int] | None = None,
+        sell_click_target: tuple[int, int] | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if not math.isfinite(cooldown_seconds) or cooldown_seconds < 0:
             raise ValueError("Cooldown must be a finite, non-negative number.")
+        for target in (buy_click_target, sell_click_target):
+            if target is not None and (
+                len(target) != 2
+                or any(
+                    isinstance(coordinate, bool) or not isinstance(coordinate, int)
+                    for coordinate in target
+                )
+            ):
+                raise ValueError("Click targets must be pairs of integer coordinates.")
 
         self._buy_detector = buy_detector
         self._sell_detector = sell_detector
         self._executor = executor
         self._cooldown_seconds = cooldown_seconds
+        self._buy_click_target = buy_click_target
+        self._sell_click_target = sell_click_target
         self._clock = clock
         self.IS_HOLDING = False
         self._last_click_at: float | None = None
@@ -65,13 +78,21 @@ class TradingLogic:
         if normalized_signal == "BUY":
             if self.IS_HOLDING or buy_detection is None:
                 return TradingAction.NONE
-            detection = buy_detection
+            target = (
+                self._buy_click_target
+                if self._buy_click_target is not None
+                else buy_detection.center
+            )
         else:
             if not self.IS_HOLDING or sell_detection is None:
                 return TradingAction.NONE
-            detection = sell_detection
+            target = (
+                self._sell_click_target
+                if self._sell_click_target is not None
+                else sell_detection.center
+            )
 
-        self._executor.move_and_click(*detection.center)
+        self._executor.move_and_click(*target)
         self.IS_HOLDING = normalized_signal == "BUY"
         self._last_click_at = self._clock()
         return normalized_signal.lower()

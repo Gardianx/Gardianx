@@ -4,12 +4,16 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from main_agent import (
+    BUY_CLICK_TARGET,
+    CHART_REGION,
+    SELL_CLICK_TARGET,
     DryRunExecutor,
     _build_features,
     _cooldown,
     _interval,
     _threshold,
     _validate_prediction,
+    build_parser,
     run_agent,
 )
 from model_brain import SignalPrediction
@@ -18,7 +22,17 @@ from screen_detector import Detection
 from trading_logic import TradingAction, TradingLogic
 
 
+class _FakeScreen:
+    def crop(self, bounds):
+        self.crop_bounds = bounds
+        return self
+
+
 class MainAgentTests(unittest.TestCase):
+    def _screenshot_provider(self):
+        screen = _FakeScreen()
+        return screen, Mock(return_value=screen)
+
     def test_run_agent_checks_logic_and_waits_until_stop(self):
         brain = Mock()
         brain.predict_signal.return_value = SignalPrediction("HOLD", 0.0)
@@ -33,6 +47,7 @@ class MainAgentTests(unittest.TestCase):
         executor.wait_for_stop.side_effect = [False, True]
         report = Mock()
         trade_logger = Mock()
+        screen, screenshot_provider = self._screenshot_provider()
 
         run_agent(
             brain,
@@ -43,6 +58,7 @@ class MainAgentTests(unittest.TestCase):
             1.5,
             report=report,
             trade_logger=trade_logger,
+            screenshot_provider=screenshot_provider,
         )
 
         self.assertEqual(brain.predict_signal.call_count, 2)
@@ -54,10 +70,15 @@ class MainAgentTests(unittest.TestCase):
         trade_logger.assert_called_with(
             "HOLD",
             "price unavailable; model_signal=HOLD; holding=False; "
-            "buy_match=0.000; sell_match=0.000; model_placeholder=True; mode=live",
+            "buy_match=0.000; sell_match=0.000; model_placeholder=False; mode=live",
             0.0,
         )
         self.assertEqual(report.call_count, 2)
+        self.assertEqual(
+            screen.crop_bounds,
+            (CHART_REGION.left, CHART_REGION.top, 1362, 728),
+        )
+        self.assertEqual(screenshot_provider.call_count, 2)
 
     def test_run_agent_passes_vision_and_position_features_to_model(self):
         buy = Detection(confidence=0.95, center=(10, 20))
@@ -73,6 +94,7 @@ class MainAgentTests(unittest.TestCase):
         sell_detector.find.return_value = sell
         executor = Mock()
         executor.wait_for_stop.return_value = True
+        screen, screenshot_provider = self._screenshot_provider()
 
         run_agent(
             brain,
@@ -83,17 +105,12 @@ class MainAgentTests(unittest.TestCase):
             1.0,
             report=Mock(),
             trade_logger=Mock(),
+            screenshot_provider=screenshot_provider,
         )
 
-        brain.predict_signal.assert_called_once_with(
-            {
-                "buy_detected": 1.0,
-                "buy_confidence": 0.95,
-                "sell_detected": 1.0,
-                "sell_confidence": 0.8,
-                "is_holding": 1.0,
-            }
-        )
+        brain.predict_signal.assert_called_once_with(screen)
+        buy_detector.find.assert_called_once_with(screen)
+        sell_detector.find.assert_called_once_with(screen)
         logic.execute_prediction.assert_called_once_with("HOLD", buy, sell)
 
     def test_kill_switch_stops_before_model_or_mouse_action(self):
@@ -135,6 +152,7 @@ class MainAgentTests(unittest.TestCase):
         sell_detector = Mock()
         sell_detector.find.return_value = sell
         trade_logger = Mock()
+        screen, screenshot_provider = self._screenshot_provider()
 
         run_agent(
             brain,
@@ -145,6 +163,7 @@ class MainAgentTests(unittest.TestCase):
             1.0,
             report=Mock(),
             trade_logger=trade_logger,
+            screenshot_provider=screenshot_provider,
         )
 
         self.assertTrue(logic.IS_HOLDING)
@@ -230,6 +249,12 @@ class MainAgentTests(unittest.TestCase):
             with self.subTest(threshold=invalid):
                 with self.assertRaises(argparse.ArgumentTypeError):
                     _threshold(invalid)
+
+    def test_calibrated_settings_match_requested_coordinates(self):
+        self.assertEqual(CHART_REGION.as_tuple(), (2, 0, 1360, 728))
+        self.assertEqual(BUY_CLICK_TARGET, (1188, 23))
+        self.assertEqual(SELL_CLICK_TARGET, (1308, 21))
+        self.assertEqual(build_parser().parse_args([]).region, (2, 0, 1360, 728))
 
 
 if __name__ == "__main__":

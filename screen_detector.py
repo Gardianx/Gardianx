@@ -58,8 +58,9 @@ class ImageDetector:
         if self._template is None:
             raise FileNotFoundError(f"Could not load template image: {template_path}")
 
-    def find(self) -> Detection | None:
-        screenshot = self._screenshot(region=self._region.as_tuple())
+    def find(self, screenshot=None) -> Detection | None:
+        if screenshot is None:
+            screenshot = self._screenshot(region=self._region.as_tuple())
         image = self._numpy.asarray(screenshot)
         if image.ndim == 3:
             color_conversion = (

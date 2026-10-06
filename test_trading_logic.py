@@ -118,6 +118,43 @@ class TradingLogicTests(unittest.TestCase):
         self.assertTrue(self.logic.IS_HOLDING)
         self.executor.move_and_click.assert_not_called()
 
+    def test_configured_click_targets_override_detection_centers(self):
+        logic = TradingLogic(
+            self.buy_detector,
+            self.sell_detector,
+            self.executor,
+            cooldown_seconds=0,
+            buy_click_target=(1188, 23),
+            sell_click_target=(1308, 21),
+        )
+
+        self.assertEqual(
+            logic.execute_prediction("BUY", self.buy_detection, self.sell_detection),
+            TradingAction.BUY,
+        )
+        self.assertTrue(logic.IS_HOLDING)
+        self.assertEqual(
+            logic.execute_prediction("SELL", self.buy_detection, self.sell_detection),
+            TradingAction.SELL,
+        )
+        self.executor.move_and_click.assert_has_calls(
+            [
+                unittest.mock.call(1188, 23),
+                unittest.mock.call(1308, 21),
+            ]
+        )
+
+    def test_rejects_invalid_click_targets(self):
+        for target in ((1,), (1, True), (1.5, 2)):
+            with self.subTest(target=target):
+                with self.assertRaises(ValueError):
+                    TradingLogic(
+                        self.buy_detector,
+                        self.sell_detector,
+                        self.executor,
+                        buy_click_target=target,
+                    )
+
     def test_invalid_prediction_is_rejected(self):
         with self.assertRaises(ValueError):
             self.logic.execute_prediction("MAYBE", None, None)

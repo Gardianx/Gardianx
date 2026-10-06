@@ -39,7 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Train a three-class CNN using dataset/train and dataset/validation."
     )
-    parser.add_argument("--epochs", type=_positive_int, default=10)
+    parser.add_argument("--epochs", type=_positive_int, default=15)
     parser.add_argument("--batch-size", type=_positive_int, default=32)
     parser.add_argument("--learning-rate", type=_positive_float, default=0.001)
     parser.add_argument("--train-dir", type=Path, default=TRAIN_DIR)
@@ -131,7 +131,7 @@ def _run_epoch(model, loader, criterion, device, torch, optimizer=None):
 
 def train_model(
     *,
-    epochs: int = 10,
+    epochs: int = 15,
     batch_size: int = 32,
     learning_rate: float = 0.001,
     train_dir: str | Path = TRAIN_DIR,

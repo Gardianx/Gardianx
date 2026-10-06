@@ -17,6 +17,9 @@ PROJECT_DIR = Path(__file__).resolve().parent
 TEMPLATE_DIR = PROJECT_DIR / "templates"
 BUY_TEMPLATE = TEMPLATE_DIR / "buy_button.png"
 SELL_TEMPLATE = TEMPLATE_DIR / "sell_button.png"
+CHART_REGION = Region(left=2, top=0, width=1360, height=728)
+BUY_CLICK_TARGET = (1188, 23)
+SELL_CLICK_TARGET = (1308, 21)
 
 
 class DryRunExecutor(SafeExecutor):
@@ -57,17 +60,23 @@ def _threshold(value: str) -> float:
     return threshold
 
 
+def _capture_desktop_screenshot():
+    import pyautogui
+
+    return pyautogui.screenshot()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Monitor a screen region for Buy/Sell templates until ESC is pressed."
     )
     parser.add_argument(
         "--region",
-        required=True,
         nargs=4,
         type=int,
         metavar=("LEFT", "TOP", "WIDTH", "HEIGHT"),
-        help="Screen region to monitor.",
+        default=CHART_REGION.as_tuple(),
+        help="Screen region to monitor (default: calibrated chart area).",
     )
     parser.add_argument(
         "--interval",
@@ -111,23 +120,36 @@ def run_agent(
     *,
     report: Callable[[str], None] = print,
     trade_logger: Callable[[str, float | str, float], object] = log_trade,
+    chart_region: Region = CHART_REGION,
+    screenshot_provider: Callable | None = None,
 ) -> None:
-    """Scan templates, ask the model, apply safeguards, and log every cycle."""
+    """Capture the chart, infer a signal, apply safeguards, and log each cycle."""
+    if screenshot_provider is None:
+        screenshot_provider = _capture_desktop_screenshot
+
     while True:
         executor.check_kill_switch()
 
-        buy_detection = buy_detector.find()
+        desktop_screenshot = screenshot_provider()
+        chart_image = desktop_screenshot.crop(
+            (
+                chart_region.left,
+                chart_region.top,
+                chart_region.left + chart_region.width,
+                chart_region.top + chart_region.height,
+            )
+        )
+        buy_detection = buy_detector.find(chart_image)
         executor.check_kill_switch()
-        sell_detection = sell_detector.find()
+        sell_detection = sell_detector.find(chart_image)
         executor.check_kill_switch()
 
-        # These are visual template-match features, not market-price features.
         current_features = _build_features(
             buy_detection,
             sell_detection,
             is_holding=logic.IS_HOLDING,
         )
-        prediction = brain.predict_signal(current_features)
+        prediction = brain.predict_signal(chart_image)
         signal, confidence = _validate_prediction(prediction)
         executor.check_kill_switch()
 
@@ -160,7 +182,7 @@ def _build_features(
     *,
     is_holding: bool,
 ) -> dict[str, float]:
-    """Convert current vision and position state into numeric model inputs."""
+    """Convert template detections and position state into logged measurements."""
     return {
         "buy_detected": float(buy_detection is not None),
         "buy_confidence": buy_detection.confidence if buy_detection else 0.0,
@@ -210,6 +232,7 @@ def main(argv: list[str] | None = None) -> int:
     buy_detector = ImageDetector(BUY_TEMPLATE, region, args.threshold)
     sell_detector = ImageDetector(SELL_TEMPLATE, region, args.threshold)
     brain = TradingBrain()
+    brain.load_model()
     kill_switch = KillSwitch()
     executor_type = SafeExecutor if args.execute else DryRunExecutor
     executor = executor_type(args.log_file, kill_switch=kill_switch)
@@ -218,6 +241,8 @@ def main(argv: list[str] | None = None) -> int:
         sell_detector,
         executor,
         cooldown_seconds=args.cooldown,
+        buy_click_target=BUY_CLICK_TARGET,
+        sell_click_target=SELL_CLICK_TARGET,
     )
 
     mode = "LIVE EXECUTION" if args.execute else "DRY RUN (no mouse clicks)"

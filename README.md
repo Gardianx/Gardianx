@@ -24,6 +24,17 @@ Sell button and press **ENTER**. Press **C** to skip either crop. Saved images
 go into the project's `templates` folder as `buy_button.png` and
 `sell_button.png`. A new successful crop replaces an image with the same name.
 
+To capture the calibrated button crops automatically after switching to
+Firefox, run:
+
+```powershell
+python capture_with_delay.py
+```
+
+The script prints a five-second countdown, captures the full screen, and saves
+60x30 crops centered at the calibrated Buy `(1188, 23)` and Sell `(1308, 21)`
+button coordinates.
+
 ## Run
 
 Save a small reference image of the indicator or button as `indicator.png`.
@@ -50,6 +61,12 @@ Use a distinctive, stable template and verify the coordinates on your display;
 screen scaling, window movement, or layout changes can make fixed coordinates
 unsafe. This starter is not a substitute for broker-side safeguards.
 
+## Find screen coordinates
+
+Run `python coordinate_finder.py`, move the mouse to a point on the screen, and
+press **F8** to print its exact cursor coordinates in the terminal. Repeat for
+chart boundaries and button positions; press **ESC** to stop the utility.
+
 ## Stateful Buy/Sell logic
 
 `trading_logic.py` provides a `TradingLogic` controller. Give it separate
@@ -66,16 +83,23 @@ before using this with a live trading interface.
 
 ## Run the master agent
 
-After using `template_cropper.py` to save both button templates, specify the
-screen region containing the signals/buttons:
+After using `template_cropper.py` to save both button templates and installing
+the PyTorch/torchvision builds from `requirements-training.txt`, run:
 
 ```powershell
-python main_agent.py --region 100 100 900 600
+python main_agent.py
 ```
 
-The agent checks the relevant template, then waits 1.5 seconds before checking
-again. Use `--interval` to set a delay from 1 to 2 seconds and `--cooldown` to
-change the minimum time between clicks. By default, it runs in dry-run mode:
+The default chart bounds are top-left `(2, 0)` to bottom-right `(1362, 728)`,
+represented as the screen region `(left=2, top=0, width=1360, height=728)`.
+Each scan crops that region from one desktop screenshot and passes the crop to
+`model_brain.py` for inference; template checks use the same captured crop.
+Buy and Sell clicks target `(1188, 23)` and `(1308, 21)` respectively, but are
+still gated by a matching button template, position state, and cooldown. The
+`--region` option can override the chart region. The agent waits 1.5 seconds
+between scans; use `--interval` to set a delay from 1 to 2 seconds and
+`--cooldown` to change the minimum time between clicks. By default, it runs in
+dry-run mode:
 it logs matching actions and updates its simulated in-memory state without
 moving or clicking the mouse. Add `--execute` only after validating the
 templates and coordinates in a paper-trading or other non-live environment.
@@ -85,14 +109,11 @@ The ESC listener runs on `pynput`'s background listener thread. Mouse movement
 checks the stop signal in short steps; no software listener can guarantee
 microsecond-level interruption of an operating-system or GUI call.
 
-The master loop also passes both template detections and `IS_HOLDING` to
-`TradingBrain.predict_signal()`. `TradingLogic` permits a predicted BUY or SELL
-only when the matching template is present, the position state allows it, and
-the click cooldown has elapsed. Each scan appends a result to
-`trade_history.csv` through `performance_logger.py`. The current model stub
-always predicts placeholder HOLD with zero confidence, so it will not trigger
-clicks. These model inputs are visual template confidences, not market prices;
-no market data or live asset price is currently collected.
+The master loop passes the chart crop to `TradingBrain.predict_signal()` and
+uses the CNN checkpoint's highest-confidence `buy`, `sell`, or `hold`
+prediction. Each scan appends a result to `trade_history.csv` through
+`performance_logger.py`. The CNN classifies chart pixels; no market data or
+live asset price is currently collected.
 
 ## Trade history CSV
 
@@ -102,21 +123,48 @@ and appends timestamped `BUY`, `SELL`, or `HOLD` records. The price field
 accepts either a number or an asset-state description when a price is
 unavailable. Confidence must be a number from 0 to 1.
 
-## Model interface placeholder
+## Model inference
 
-`model_brain.py` provides `TradingBrain`, a dependency-free interface for a
-future trained model. It stores a configurable model path and accepts feature
-mappings in `predict_signal()`. Until inference is implemented, predictions
-are explicitly marked placeholders and return `HOLD` with zero confidence;
-they are not connected to the master agent or execution logic. Calling
-`train_model()` raises `NotImplementedError` until model fitting and saving
-are implemented.
+`model_brain.py` loads `trading_vision_model.pth` from the project root,
+builds a three-class torchvision ResNet-18, loads its raw or wrapped state
+dictionary with validated key compatibility, resizes each chart crop to
+224x224, and returns the highest-confidence prediction. For raw state
+dictionaries without class metadata, output indices map alphabetically to
+`buy`, `hold`, and `sell`, matching `ImageFolder` conventions. Install the
+platform-appropriate PyTorch and torchvision packages from
+`requirements-training.txt` before running `main_agent.py`. Model fitting is
+handled by `train_vision_model.py`; `TradingBrain.train_model()` is not
+implemented.
 
 ## Prepare dataset folders
 
 Run `python setup_dataset.py` to create `dataset/train` and
 `dataset/validation`, each with `buy`, `sell`, and `hold` subfolders. The
 command is safe to rerun and prints the dataset location when complete.
+
+## Download labeled chart images from Hugging Face
+
+Install the optional Hugging Face `datasets` package through
+`requirements-training.txt`, then run:
+
+```powershell
+python huggingface_ingestion.py
+```
+
+The loader downloads up to 1,500 images from
+`StephanAkkerman/stock-charts` and saves them under the separate
+`dataset/chart_recognition/` tree. The source labels are `charts` and
+`non-charts`, so the loader preserves them and does not fabricate BUY/SELL/HOLD
+labels. It writes a stratified validation sample (every fifth image within
+each source class) and places the remaining images in that class's training
+folder. This binary chart-recognition dataset is separate from the trading
+signal dataset.
+
+Train the matching binary classifier with:
+
+```powershell
+python train_chart_classifier.py
+```
 
 ## Preprocess and label chart images
 
@@ -146,7 +194,7 @@ python -m pip install -r requirements-training.txt
 After collecting labeled images in every class for both dataset splits, run:
 
 ```powershell
-python train_vision_model.py --epochs 10
+python train_vision_model.py --epochs 15
 ```
 
 The script loads the `dataset/train/` and `dataset/validation/` folders with

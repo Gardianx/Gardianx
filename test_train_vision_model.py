@@ -14,6 +14,9 @@ from train_vision_model import (
 
 
 class TrainVisionModelTests(unittest.TestCase):
+    def test_cli_defaults_to_15_epochs(self):
+        self.assertEqual(build_parser().parse_args([]).epochs, 15)
+
     def test_dataset_folder_validation_accepts_expected_class_layout(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
