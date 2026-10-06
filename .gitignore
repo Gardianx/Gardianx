@@ -5,3 +5,4 @@ venv/
 gui_actions.log
 trade_history.csv
 trading_vision_model.pth
+models/*.pt

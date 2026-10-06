@@ -151,6 +151,93 @@ default model is pretrained for general-purpose object classes, not browser
 tabs, chart controls, or trading buttons; detecting those UI elements requires
 a YOLO model trained on labeled screenshots.
 
+## Modular broker and asset scaffold
+
+The broker-aware, state-monitoring loop can be started with:
+
+```powershell
+python main.py
+```
+
+`core/screen_capture.py` captures the desktop, `core/detection.py` loads
+`models/best.pt`, `core/vision.py` finds controls and OCRs the active asset
+label, and `core/state.py` identifies the broker and distinguishes standard
+EUR/USD from EUR/USD OTC. `brokers/exness.py` and
+`brokers/pocket_option.py` fill detected lot/investment/expiration controls and
+click detected action buttons. `utils/mouse.py` is dry-run by default. The
+central thresholds and Exness/OTC rejection policy are in `config.py`.
+The UI-trained checkpoint must expose broker labels (`exness` or
+`pocket_option`), `active_asset_label`, broker control labels (`buy_button`,
+`sell_button`, `lot_size_input`, `call_button`, `put_button`,
+`investment_input`, `expiration_input`), and safety popup labels
+(`insufficient_balance`, `market_closed`) for the workflows being used.
+Pocket Option annotations can use `pocket_buy`, `pocket_sell`, `pocket_amount`,
+and `pocket_time`; those labels are accepted in place of the generic action
+buttons, investment field, and expiration field. `pocket_payout`,
+`pocket_trades`, `pocket_wallet`, `pocket_candle_timer`,
+`bullish_otc_candle`, and `bearish_otc_candle` are recognized as Pocket Option
+UI detections for future strategy logic. The current runner does not derive a
+trade signal from the candle detections.
+
+The agent continuously monitors the screen and accepts an explicit one-shot
+external action; it never treats a visible button as an instruction to trade.
+For example, this validates a requested Exness buy against live detections but
+does not send mouse input:
+
+```powershell
+python main.py --action buy --asset "EUR/USD" --amount 0.01
+```
+
+For Pocket Option, supply an investment amount and expiration:
+
+```powershell
+python main.py --action call --asset "EUR/USD OTC" --amount 5 --expiration-seconds 60
+```
+
+Actual PyAutoGUI input requires the additional `--execute` opt-in. The agent
+fails closed and pauses on unknown/conflicting broker identity, unverified or
+mismatched OCR asset, an Exness/OTC mismatch, or recognized
+`insufficient_balance`/`market_closed` popup detections. Press **ESC** to stop.
+OCR requires `pytesseract` (in `requirements.txt`) and the separate Tesseract
+OCR executable installed on the system. Label names used by `best.pt` must
+match the configured aliases/control labels in `config.py` and the broker
+adapters. The weight file is local and is not committed.
+
+### Train the broker UI detector
+
+The detector identifies screen regions; it does not learn a trading strategy.
+To train it, collect broker screenshots and label each visible object with a
+bounding box using the exact class names and order in
+[`dataset/ui/data.yaml`](./dataset/ui/data.yaml). Keep screenshots from the
+same capture sessions together when splitting train and validation data to
+reduce near-duplicate leakage. Include varied screen sizes, themes, chart
+states, and both popup and no-popup examples. Store YOLO-format annotations
+under `dataset/ui/labels/train` and `dataset/ui/labels/val`, paired with images
+under `dataset/ui/images/train` and `dataset/ui/images/val`.
+
+Install the packages in `requirements-training.txt` and run the training
+script from the repository root:
+
+```powershell
+python train_ui_detector.py --data dataset/ui/data.yaml --device 0
+```
+
+On Kaggle, upload the dataset as an input and pass its `data.yaml` path. Use
+`--device cpu` if a GPU is unavailable, or pass `--base-model` if the starting
+checkpoint is provided as a Kaggle input. The script validates that dataset
+class names match the application's UI labels, trains and validates YOLO, and
+copies the best checkpoint to `models/best.pt`. Validate detections on held-out
+screenshots before enabling live input. Trading decisions remain separate and
+must come from a strategy you define; the current orchestrator does not infer
+trades from detections.
+
+For Pocket Option asset identity, label the rectangle containing the currently
+selected symbol as `active_asset_label`; OCR reads its text. The supported OTC
+symbols are EUR/USD, AED/CNY, AUD/NZD, EUR/NZD, CAD/CHF, USD/JPY, EUR/RUB,
+GBP/JPY, and GBP/CAD. Avoid separate YOLO classes for every symbol: the same
+symbol may appear in the open asset menu, and the detector alone cannot tell
+which occurrence is selected.
+
 ## Prepare dataset folders
 
 Run `python setup_dataset.py` to create `dataset/train` and
