@@ -9,6 +9,9 @@ from train_ui_detector import REQUIRED_CLASSES, _validate_data_config, train_det
 
 
 class TrainUIDetectorTests(unittest.TestCase):
+    def test_required_classes_include_pocket_candle_time(self):
+        self.assertIn("pocket_candle_time", REQUIRED_CLASSES)
+
     def _write_config(self, directory: Path, names: list[str]) -> Path:
         config_path = directory / "data.yaml"
         config_path.write_text(

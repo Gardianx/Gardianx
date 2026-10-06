@@ -175,9 +175,9 @@ Pocket Option annotations can use `pocket_buy`, `pocket_sell`, `pocket_amount`,
 and `pocket_time`; those labels are accepted in place of the generic action
 buttons, investment field, and expiration field. `pocket_payout`,
 `pocket_trades`, `pocket_wallet`, `pocket_candle_timer`,
-`bullish_otc_candle`, and `bearish_otc_candle` are recognized as Pocket Option
-UI detections for future strategy logic. The current runner does not derive a
-trade signal from the candle detections.
+`pocket_candle_time`, `bullish_otc_candle`, and `bearish_otc_candle` are
+recognized as Pocket Option UI detections for future strategy logic. The
+current runner does not derive a trade signal from the candle detections.
 For the selected browser tab, label its bounding box as `active_exness_tab` or
 `active_pocket_option_tab`; the inactive visible tab should not receive either
 active-tab label. These explicit selected-tab detections take precedence over

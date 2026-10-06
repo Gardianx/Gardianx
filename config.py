@@ -21,6 +21,7 @@ BROKER_LABEL_ALIASES = {
             "pocket_trades",
             "pocket_wallet",
             "pocket_candle_timer",
+            "pocket_candle_time",
             "bearish_otc_candle",
             "bullish_otc_candle",
         }
@@ -79,6 +80,7 @@ class AppConfig:
             "pocket_trades": 0.60,
             "pocket_wallet": 0.60,
             "pocket_candle_timer": 0.60,
+            "pocket_candle_time": 0.60,
             "bearish_otc_candle": 0.60,
             "bullish_otc_candle": 0.60,
             "insufficient_balance": 0.60,
