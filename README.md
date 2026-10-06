@@ -136,6 +136,21 @@ platform-appropriate PyTorch and torchvision packages from
 handled by `train_vision_model.py`; `TradingBrain.train_model()` is not
 implemented.
 
+## YOLO screen-object detection starter
+
+Install Ultralytics with `python -m pip install ultralytics` (also listed in
+`requirements-training.txt`) and run:
+
+```powershell
+python yolo_detector.py
+```
+
+The starter loads the generic `yolov8n.pt` model, captures the full screen,
+then reports each detected class, bounding box, center, and confidence. The
+default model is pretrained for general-purpose object classes, not browser
+tabs, chart controls, or trading buttons; detecting those UI elements requires
+a YOLO model trained on labeled screenshots.
+
 ## Prepare dataset folders
 
 Run `python setup_dataset.py` to create `dataset/train` and
