@@ -178,6 +178,10 @@ buttons, investment field, and expiration field. `pocket_payout`,
 `bullish_otc_candle`, and `bearish_otc_candle` are recognized as Pocket Option
 UI detections for future strategy logic. The current runner does not derive a
 trade signal from the candle detections.
+For the selected browser tab, label its bounding box as `active_exness_tab` or
+`active_pocket_option_tab`; the inactive visible tab should not receive either
+active-tab label. These explicit selected-tab detections take precedence over
+broker logo/control detections when resolving broker state.
 
 The agent continuously monitors the screen and accepts an explicit one-shot
 external action; it never treats a visible button as an instruction to trade.
@@ -237,6 +241,11 @@ symbols are EUR/USD, AED/CNY, AUD/NZD, EUR/NZD, CAD/CHF, USD/JPY, EUR/RUB,
 GBP/JPY, and GBP/CAD. Avoid separate YOLO classes for every symbol: the same
 symbol may appear in the open asset menu, and the detector alone cannot tell
 which occurrence is selected.
+
+The browser tab strip usually shows both Exness and Pocket Option tabs at once.
+Do not label both as active: annotate only the selected tab with its
+`active_*_tab` class. Otherwise the detector would know both tabs exist but
+could not determine which broker is currently open.
 
 ## Prepare dataset folders
 

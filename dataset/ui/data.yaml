@@ -26,7 +26,11 @@ names:
   - pocket_candle_timer
   - bearish_otc_candle
   - bullish_otc_candle
+  - active_exness_tab
+  - active_pocket_option_tab
 
 # Label the selected symbol box as active_asset_label and let OCR read its text.
 # Supported OTC values include EUR/USD, AED/CNY, AUD/NZD, EUR/NZD, CAD/CHF,
 # USD/JPY, EUR/RUB, GBP/JPY, and GBP/CAD. Do not make a YOLO class per symbol.
+# Label the selected browser tab as active_exness_tab or active_pocket_option_tab.
+# Do not label both visible tabs as active; the inactive tab is background.

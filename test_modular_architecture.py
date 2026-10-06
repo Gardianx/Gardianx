@@ -46,6 +46,28 @@ class ModularArchitectureTests(unittest.TestCase):
         self.assertEqual(state.asset, Asset.AED_CNY_OTC)
         self.assertEqual(state.asset_type, AssetType.OTC)
 
+    def test_active_tab_identifies_broker_even_when_other_broker_ui_is_visible(self):
+        state = SystemState.from_detections(
+            [
+                detection("active_pocket_option_tab"),
+                detection("exness"),
+                detection("pocket_amount"),
+            ],
+            "AED/CNY OTC",
+        )
+
+        self.assertEqual(state.broker, Broker.POCKET_OPTION)
+
+    def test_conflicting_active_tabs_are_rejected(self):
+        with self.assertRaises(StateConflict):
+            SystemState.from_detections(
+                [
+                    detection("active_exness_tab"),
+                    detection("active_pocket_option_tab"),
+                ],
+                "EUR/USD",
+            )
+
     def test_configured_pocket_option_otc_symbols_parse(self):
         symbols = {
             "EUR/USD_OTC": Asset.EUR_USD_OTC,

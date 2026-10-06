@@ -26,6 +26,10 @@ BROKER_LABEL_ALIASES = {
         }
     ),
 }
+ACTIVE_BROKER_TAB_ALIASES = {
+    "exness": frozenset({"active_exness_tab"}),
+    "pocket_option": frozenset({"active_pocket_option_tab"}),
+}
 SAFETY_POPUP_ALIASES = {
     "insufficient_balance": frozenset(
         {"insufficient_balance", "insufficient_balance_popup"}
@@ -61,9 +65,11 @@ class AppConfig:
             "exness": 0.70,
             "exness_logo": 0.70,
             "broker_exness": 0.70,
+            "active_exness_tab": 0.70,
             "pocket_option": 0.70,
             "pocket_option_logo": 0.70,
             "broker_pocket_option": 0.70,
+            "active_pocket_option_tab": 0.70,
             "otc_dropdown_menu": 0.65,
             "pocket_buy": 0.65,
             "pocket_sell": 0.65,

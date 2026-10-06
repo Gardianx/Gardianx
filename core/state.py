@@ -5,6 +5,7 @@ from enum import Enum
 from typing import Iterable
 
 from config import (
+    ACTIVE_BROKER_TAB_ALIASES,
     BROKER_LABEL_ALIASES,
     SAFETY_POPUP_ALIASES,
     AppConfig,
@@ -59,7 +60,13 @@ class SystemState:
                 config.min_detection_confidence,
             )
         ]
-        detected_brokers = {
+        active_tab_brokers = {
+            broker
+            for detection in accepted
+            for broker, aliases in ACTIVE_BROKER_TAB_ALIASES.items()
+            if _normalize_label(detection.label) in aliases
+        }
+        detected_brokers = active_tab_brokers or {
             broker
             for detection in accepted
             for broker, aliases in BROKER_LABEL_ALIASES.items()

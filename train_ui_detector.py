@@ -36,6 +36,8 @@ REQUIRED_CLASSES = frozenset(
         "pocket_candle_timer",
         "bearish_otc_candle",
         "bullish_otc_candle",
+        "active_exness_tab",
+        "active_pocket_option_tab",
     }
 )
 
