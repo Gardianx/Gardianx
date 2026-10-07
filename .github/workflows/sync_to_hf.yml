@@ -13,11 +13,17 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Push to Hugging Face
+      - name: Configure Credentials and Push
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          git remote add hf https://whitehavend:$HF_TOKEN@huggingface.co/spaces/whitehavend/Gardianx
+          # Create a secure local credential file for Hugging Face
+          echo "machine huggingface.co login whitehavend password $HF_TOKEN" > ~/.netrc
+          
+          # Configure standard Git variables
           git config --global user.email "actions@github.com"
           git config --global user.name "GitHub Actions"
+          
+          # Link and force push directly to your Space
+          git remote add hf https://huggingface.co || true
           git push --force hf main
