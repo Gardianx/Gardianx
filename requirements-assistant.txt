@@ -1,0 +1,11 @@
+# Groq Cloud and Google AI Studio use their HTTPS REST APIs from the Python
+# standard library; install no local language model or provider SDK.
+
+# CPU-friendly local speech recognition.
+faster-whisper
+sounddevice
+numpy
+pyttsx3
+
+# Only used when the explicit --allow-web-search option is enabled.
+ddgs

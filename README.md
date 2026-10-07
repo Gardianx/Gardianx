@@ -1,3 +1,12 @@
+---
+title: Gardianx Assistant API
+emoji: 🤖
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 7860
+---
+
 # GUI trading automation starter
 
 This one-shot script checks a selected screen region for a reference image, then
@@ -136,10 +145,147 @@ platform-appropriate PyTorch and torchvision packages from
 handled by `train_vision_model.py`; `TradingBrain.train_model()` is not
 implemented.
 
-## YOLO screen-object detection starter
+## Browser assistant app
 
-Install Ultralytics with `python -m pip install ultralytics` (also listed in
-`requirements-training.txt`) and run:
+The browser app has a Vite frontend for Vercel and a FastAPI backend for a
+Hugging Face Docker Space.
+It supports chat, switching between Groq Cloud and Google AI Studio, live
+microphone recording, audio-file transcription, and session performance
+metrics. Speech is transcribed by faster-whisper in the Space; only
+the transcript and chat text are sent to the selected conversation provider.
+The assistant does not run trades or connect to the trading monitor.
+
+### Deploy the backend to Hugging Face
+
+Create a **Docker Space** from this repository, or link the repository to a
+Space. The root `Dockerfile` runs the FastAPI app on port `7860`; the Space
+metadata at the top of this README configures that port. Keep the Space public
+so the Vercel browser app can reach its API. The shared app password protects
+chat, transcription, and performance endpoints; the health endpoint remains
+public.
+
+In the Space **Settings**, add these **Secrets**:
+
+- `APP_ACCESS_PASSWORD`: a strong shared app password. Never put this value
+  in Vercel's public build variables.
+- At least one provider key: `GROQ_API_KEY` or `GOOGLE_API_KEY`.
+
+Add these **Variables** in the Space settings:
+
+- `CORS_ORIGINS`: the exact deployed Vercel origin, for example
+  `https://your-app.vercel.app` (no trailing slash).
+- `AI_PROVIDER`: `groq` or `google` for the initial provider.
+- Optionally set `GROQ_MODEL`, `GOOGLE_MODEL`, or `WHISPER_MODEL`; default
+  speech recognition uses the smaller `tiny` model.
+
+The API refuses protected requests until `APP_ACCESS_PASSWORD` is set. Keys
+stay in Space secrets and are never included in API responses or the frontend.
+The Space runs speech recognition locally on CPU; the first audio request may
+take longer while faster-whisper downloads its model. Rate limiting and
+performance metrics are process-local and reset when the Space restarts.
+
+### Deploy the frontend to Vercel
+
+Import the same repository into Vercel and set the project **Root Directory**
+to `web`. Add this build environment variable:
+
+```text
+VITE_API_BASE_URL=https://<your-space-subdomain>.hf.space
+```
+
+Use the Space's public `hf.space` app URL, not its `huggingface.co/spaces/...`
+management URL. Set `VITE_API_BASE_URL` in Vercel before building the frontend.
+Deploy, open the Vercel app, and enter the same `APP_ACCESS_PASSWORD`. Use the
+provider selector to switch between configured providers. Microphone access
+requires browser permission and a secure HTTPS origin. The audio tab accepts
+WAV, MP3, M4A, AAC, FLAC, OGG, and WebM uploads up to 15 MB. A transcription is
+placed in the message composer for review before sending.
+
+The dashboard shows response time, message/audio counts, failures, and
+transcription time. Backend metrics are process-local and are reset whenever
+the Space restarts; they are monitoring indicators, not
+provider billing or token-usage records. The small on-page session chart is
+based on activity in the current browser session.
+
+### Run locally
+
+In one PowerShell window, set an app password and a provider key, then start
+the API:
+
+```powershell
+$env:APP_ACCESS_PASSWORD = "<a local app password>"
+$env:GROQ_API_KEY = "<your Groq API key>"
+python -m pip install -r requirements-web.txt
+python -m uvicorn api:app --reload
+```
+
+In a second window, start the frontend:
+
+```powershell
+npm --prefix web install
+npm --prefix web run dev
+```
+
+Open the Vite URL (normally `http://localhost:5173`). To use Google AI Studio,
+set `GOOGLE_API_KEY` and choose Google in the app.
+
+The optional terminal client remains available as `nlp_assistant.py`; it uses
+the same provider environment keys and local speech packages. It is not
+required for the deployed app.
+
+## Prepare a local vision-language model dataset
+
+The broker UI detector still uses YOLO until a VLM checkpoint and an adapter
+have been trained and validated. This keeps the current monitor usable while
+preparing a model-neutral image-and-description fine-tuning dataset; installing
+the VLM requirements or generating manifests does not download a model or send
+screenshots to an external service.
+
+Install the separate local VLM training stack, choosing the PyTorch build for
+your CPU/CUDA setup:
+
+```powershell
+python -m pip install -r requirements-vlm.txt
+```
+
+Collect varied broker screenshots and box annotations in the existing
+`dataset/ui/images/{train,val}` and `dataset/ui/labels/{train,val}` folders.
+Keep related capture sessions in a single split, annotate all relevant visible
+controls, active broker tabs, selected asset labels, and safety popups, and
+include screenshots with no target controls. A confirmed background image
+should have an empty `.txt` annotation file. Check the class names and ordering
+in `dataset/ui/data.yaml`; each annotation remains one YOLO-format
+`class center_x center_y width height` row. Do not put training images and
+near-duplicates in validation.
+
+Convert those annotations to JSONL manifests with image paths, an instruction
+prompt, and a JSON response containing labels and bounding boxes normalized to
+the 0–1000 range:
+
+```powershell
+python prepare_vlm_dataset.py
+```
+
+The generated `dataset/vlm/train.jsonl` and `dataset/vlm/validation.jsonl`
+reference the original local images and can be consumed by a local
+image-language fine-tuning pipeline. Missing labels and malformed coordinates
+are errors; use `--allow-missing-labels` only when a missing annotation truly
+means a verified background image. Review the generated prompts, labels, and
+boxes before training.
+
+This prepares data and dependencies, not model weights or a training recipe:
+the base VLM, model-specific processor/chat template, supported fine-tuning
+method, and hardware-appropriate settings must be selected before actual
+fine-tuning. No model is downloaded automatically. Before switching
+`main.py`, implement and validate a VLM adapter that returns the typed
+detections expected by the broker/state safety checks, and retain fail-closed
+behavior for missing or malformed model output.
+
+## Legacy YOLO screen-object detection
+
+Ultralytics remains in `requirements-training.txt` for the current detector
+and its existing training tools during the migration. To run the standalone
+legacy demo:
 
 ```powershell
 python yolo_detector.py
@@ -207,9 +353,10 @@ OCR executable installed on the system. Label names used by `best.pt` must
 match the configured aliases/control labels in `config.py` and the broker
 adapters. The weight file is local and is not committed.
 
-### Train the broker UI detector
+### Train the legacy broker UI detector
 
-The detector identifies screen regions; it does not learn a trading strategy.
+This YOLO-based workflow is retained for compatibility during the VLM
+migration; it identifies screen regions and does not learn a trading strategy.
 To train it, collect broker screenshots and label each visible object with a
 bounding box using the exact class names and order in
 [`dataset/ui/data.yaml`](./dataset/ui/data.yaml). Keep screenshots from the

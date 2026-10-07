@@ -1,0 +1,12 @@
+# Install PyTorch and torchvision builds appropriate for your CPU/CUDA platform.
+torch
+torchvision
+
+# Model-agnostic local VLM fine-tuning and image/text dataset preparation.
+transformers
+accelerate
+datasets
+peft
+trl
+pillow
+pyyaml
