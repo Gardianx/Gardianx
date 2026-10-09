@@ -233,6 +233,17 @@ The optional terminal client remains available as `nlp_assistant.py`; it uses
 the same provider environment keys and local speech packages. It is not
 required for the deployed app.
 
+For local terminal use, copy `.env.example` to `.env` in the repository root
+and put your Google key on this line:
+
+```dotenv
+GEMINI_API_KEY=your_actual_gemini_api_key
+```
+
+`nlp_assistant.py` loads that file on startup. The `.env` file is ignored by
+Git; do not commit or share it. Install `python-dotenv` with the assistant
+requirements if it is not already present.
+
 For local speech output, use Python 3.12 because the current Kokoro release
 requires Python below 3.13. Install the assistant and voice dependencies in a
 separate virtual environment:
@@ -246,12 +257,19 @@ py -3.12 -m venv .venv-voice
 Install the Windows `espeak-ng` runtime using its official installer as
 described in the [Kokoro installation guide](https://github.com/hexgrad/kokoro#-windows-installation).
 Set `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) to enable Gemini TTS as the
-preferred speech generator; when unset or unavailable, speech uses Kokoro
-locally. Kokoro is explicitly initialized with `device="cpu"` and Whisper
+cloud speech backup; Kokoro is attempted first and runs locally. Kokoro is
+explicitly initialized with `device="cpu"` and Whisper
 uses `device="cpu", compute_type="int8"`, so neither speech model uses GPU
 VRAM. The CPU PyTorch wheel avoids installing CUDA-enabled PyTorch in this
-environment. The Google TTS request sends the text to Google's cloud; Kokoro
-fallback runs locally.
+environment. Google TTS is only used when local speech fails. If Google text
+generation fails, the terminal client speaks a fixed local fallback response.
+The terminal client defaults to Google AI Studio with
+`gemini-2.5-flash-lite`; with `--provider groq --speak`, replies go directly
+through local CPU Kokoro first, with Google TTS as a voice backup. A local
+speech failure is announced before the Google voice backup is tried.
+When Google text generation is unavailable, the terminal client uses a small
+offline response handler for greetings and common social questions; other
+prompts receive an honest offline limitation rather than a fabricated answer.
 
 ## Prepare a local vision-language model dataset
 

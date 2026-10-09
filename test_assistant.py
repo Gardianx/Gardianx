@@ -1,6 +1,8 @@
+import io
 import json
 import os
 import unittest
+from contextlib import redirect_stderr
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -10,6 +12,7 @@ import assistant
 from assistant import (
     AssistantError,
     ConversationalAssistant,
+    DEFAULT_PROVIDER,
     DEFAULT_MODELS,
     GEMINI_TTS_MODEL,
     GEMINI_TTS_VOICE,
@@ -17,6 +20,7 @@ from assistant import (
     _gemini_speech_audio,
     record_and_transcribe,
     speak_text,
+    speak_text_local,
 )
 
 
@@ -49,9 +53,33 @@ class FakeResponse:
         return self.data
 
 
+class FakeOutputStream:
+    def __init__(self):
+        self.written = []
+        self.started = False
+        self.stopped = False
+        self.closed = False
+
+    def start(self):
+        self.started = True
+
+    def write(self, audio):
+        self.written.append(audio)
+
+    def stop(self):
+        self.stopped = True
+
+    def close(self):
+        self.closed = True
+
+
 class AssistantTests(unittest.TestCase):
     def test_google_default_chat_model_is_current_supported_model(self):
-        self.assertEqual(DEFAULT_MODELS["google"], "gemini-3.8-flash")
+        self.assertEqual(DEFAULT_PROVIDER, "google")
+        self.assertEqual(DEFAULT_MODELS["google"], "gemini-2.5-flash-lite")
+
+    def test_groq_default_uses_lightweight_llama_model(self):
+        self.assertEqual(DEFAULT_MODELS["groq"], "llama-3.1-8b-instant")
 
     def test_groq_client_sends_structured_intent_request(self):
         opener = Mock(
@@ -128,6 +156,55 @@ class AssistantTests(unittest.TestCase):
             "application/json",
         )
 
+    def test_google_client_extracts_sdk_shaped_text_response(self):
+        response = SimpleNamespace(
+            output_text="response from interactions api",
+        )
+        opener = Mock(
+            return_value=FakeResponse(
+                {"output_text": response.output_text}
+            )
+        )
+        client = HostedChatClient(
+            provider="google",
+            model="gemini-test",
+            api_key="google-key",
+            opener=opener,
+        )
+
+        self.assertEqual(client.chat([{"role": "user", "content": "hello"}]),
+                         "response from interactions api")
+
+    def test_google_client_extracts_object_shaped_candidate_parts(self):
+        part = SimpleNamespace(text='{"intent":"chat"}')
+        response = SimpleNamespace(
+            candidates=[
+                SimpleNamespace(content=SimpleNamespace(parts=[part]))
+            ]
+        )
+        client = HostedChatClient(provider="google", api_key="google-key")
+
+        self.assertEqual("".join(assistant._extract_text_parts(response)), '{"intent":"chat"}')
+
+    def test_google_client_prints_raw_structure_when_text_extraction_fails(self):
+        raw_response = {"candidates": [{"content": {"parts": [{"inlineData": {}}]}}]}
+        client = HostedChatClient(
+            provider="google",
+            api_key="google-key",
+            opener=Mock(return_value=FakeResponse(raw_response)),
+            debug_responses=True,
+        )
+        diagnostic = io.StringIO()
+
+        with redirect_stderr(diagnostic), self.assertRaisesRegex(
+            AssistantError,
+            "empty response",
+        ):
+            client.chat([{"role": "user", "content": "hello"}])
+
+        self.assertIn("Raw google response (text extraction failed)", diagnostic.getvalue())
+        self.assertIn('"inlineData"', diagnostic.getvalue())
+
     def test_missing_api_key_has_provider_specific_actionable_error(self):
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaisesRegex(AssistantError, "GROQ_API_KEY"):
@@ -154,7 +231,10 @@ class AssistantTests(unittest.TestCase):
         assistant = ConversationalAssistant(
             client=SimpleNamespace(chat=Mock(return_value='{"intent":"trade_request"}'))
         )
-        with self.assertRaisesRegex(AssistantError, "malformed JSON|response shape"):
+        with self.assertRaisesRegex(
+            AssistantError,
+            "malformed JSON|response shape|missing its action",
+        ):
             assistant.parse_intent("buy")
 
         bad = intent(intent="trade_request", action="buy", amount=-1)
@@ -163,6 +243,35 @@ class AssistantTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(AssistantError, "invalid amount"):
             assistant.parse_intent("buy")
+
+    def test_intent_parser_defaults_missing_optional_fields_and_ignores_extras(self):
+        client = SimpleNamespace(
+            chat=Mock(return_value=json.dumps({"intent": "chat", "extra": "ignored"}))
+        )
+        intent_parser = ConversationalAssistant(client=client)
+
+        parsed = intent_parser.parse_intent("hello")
+
+        self.assertEqual(parsed["intent"], "chat")
+        self.assertIsNone(parsed["action"])
+        self.assertIsNone(parsed["clarification"])
+        self.assertEqual(set(parsed), set(assistant.INTENT_SCHEMA["required"]))
+
+    def test_intent_parser_prints_raw_response_on_invalid_shape_when_debug_enabled(self):
+        client = SimpleNamespace(
+            chat=Mock(return_value='{"unexpected":"shape"}'),
+            debug_responses=True,
+            _debug_response=Mock(),
+        )
+        intent_parser = ConversationalAssistant(client=client)
+
+        with self.assertRaisesRegex(AssistantError, "invalid response shape"):
+            intent_parser.parse_intent("hello")
+
+        client._debug_response.assert_called_once_with(
+            "intent validation failed",
+            {"unexpected": "shape"},
+        )
 
     def test_chat_keeps_bounded_conversation_history(self):
         client = SimpleNamespace(chat=Mock(return_value="hello back"))
@@ -193,20 +302,38 @@ class AssistantTests(unittest.TestCase):
         recorder.wait.assert_called_once()
         model.transcribe.assert_called_once_with("flattened-audio", vad_filter=True)
 
-    def test_speak_text_uses_gemini_audio_when_configured(self):
+    def test_speak_text_prefers_local_kokoro_when_gemini_is_configured(self):
         player = Mock()
+        stream = FakeOutputStream()
+        player.OutputStream.return_value = stream
+        audio = numpy.array([0.1, 0.2], dtype=numpy.float32)
+        kokoro = Mock(return_value=[("Hello there.", "hello", audio)])
+        pipeline_factory = Mock(return_value=kokoro)
         audio_factory = Mock(return_value=b"\x01\x00\x02\x00")
-        with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}):
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}), patch.object(
+            assistant, "_kokoro_pipeline", None
+        ):
             speak_text(
                 "Hello there.",
                 gemini_audio_factory=audio_factory,
                 audio_decoder=Mock(return_value=(numpy.array([0.1, 0.2]), 24000)),
+                kokoro_pipeline_factory=pipeline_factory,
                 player=player,
             )
 
-        audio_factory.assert_called_once_with("Hello there.")
-        player.play.assert_called_once()
-        player.wait.assert_called_once_with()
+        pipeline_factory.assert_called_once_with(lang_code="a", device="cpu")
+        kokoro.assert_called_once_with("Hello there.", voice="af_heart")
+        audio_factory.assert_not_called()
+        self.assertEqual(len(stream.written), 1)
+        numpy.testing.assert_array_equal(stream.written[0], audio.reshape(-1, 1))
+        player.OutputStream.assert_called_once_with(
+            samplerate=assistant.TTS_SAMPLE_RATE,
+            channels=1,
+            dtype="float32",
+        )
+        self.assertTrue(stream.started)
+        self.assertTrue(stream.stopped)
+        self.assertTrue(stream.closed)
 
     def test_gemini_tts_keeps_audio_response_configuration(self):
         response = SimpleNamespace(
@@ -234,29 +361,35 @@ class AssistantTests(unittest.TestCase):
             [{"voice": GEMINI_TTS_VOICE}],
         )
 
-    def test_speak_text_falls_back_to_cpu_kokoro_when_gemini_fails(self):
+    def test_speak_text_falls_back_to_gemini_when_local_kokoro_fails(self):
         player = Mock()
-        audio = numpy.array([0.1, 0.2], dtype=numpy.float32)
-        kokoro = Mock(return_value=[("Hello there.", "hello", audio)])
-        pipeline_factory = Mock(return_value=kokoro)
-        audio_factory = Mock(side_effect=RuntimeError("cloud unavailable"))
+        audio_factory = Mock(return_value=b"\x01\x00\x02\x00")
+        audio_decoder = Mock(return_value=(numpy.array([0.1, 0.2]), 24000))
+        local_failure = Mock()
         with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}), patch.object(
             assistant, "_kokoro_pipeline", None
         ):
+            pipeline_factory = Mock(side_effect=RuntimeError("Kokoro unavailable"))
             speak_text(
                 "Hello there.",
                 gemini_audio_factory=audio_factory,
+                audio_decoder=audio_decoder,
                 kokoro_pipeline_factory=pipeline_factory,
                 player=player,
+                on_local_failure=local_failure,
             )
 
+        local_failure.assert_called_once_with()
         pipeline_factory.assert_called_once_with(lang_code="a", device="cpu")
-        kokoro.assert_called_once_with("Hello there.", voice="af_heart")
+        audio_factory.assert_called_once_with("Hello there.")
+        audio_decoder.assert_called_once_with(b"\x01\x00\x02\x00")
         player.play.assert_called_once()
         player.wait.assert_called_once_with()
 
     def test_speak_text_uses_kokoro_without_gemini_key(self):
         player = Mock()
+        stream = FakeOutputStream()
+        player.OutputStream.return_value = stream
         audio = numpy.array([0.1, 0.2], dtype=numpy.float32)
         kokoro = Mock(return_value=[("Hello there.", "hello", audio)])
         pipeline_factory = Mock(return_value=kokoro)
@@ -270,17 +403,58 @@ class AssistantTests(unittest.TestCase):
             )
 
         pipeline_factory.assert_called_once_with(lang_code="a", device="cpu")
-        player.play.assert_called_once()
+        self.assertEqual(len(stream.written), 1)
 
-    def test_speak_text_reports_when_both_engines_fail(self):
+    def test_speak_text_local_uses_cpu_kokoro_even_with_gemini_key(self):
+        player = Mock()
+        stream = FakeOutputStream()
+        player.OutputStream.return_value = stream
+        audio = numpy.array([0.1, 0.2], dtype=numpy.float32)
+        kokoro = Mock(return_value=[("Groq reply.", "groq reply", audio)])
+        pipeline_factory = Mock(return_value=kokoro)
         with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}), patch.object(
             assistant, "_kokoro_pipeline", None
         ):
-            with self.assertRaisesRegex(AssistantError, "Gemini TTS and local CPU Kokoro"):
+            speak_text_local(
+                "Groq reply.",
+                kokoro_pipeline_factory=pipeline_factory,
+                player=player,
+            )
+
+        pipeline_factory.assert_called_once_with(lang_code="a", device="cpu")
+        kokoro.assert_called_once_with("Groq reply.", voice="af_heart")
+        self.assertEqual(len(stream.written), 1)
+        self.assertTrue(stream.stopped)
+        self.assertTrue(stream.closed)
+
+    def test_kokoro_streams_each_chunk_before_generating_the_next(self):
+        stream = FakeOutputStream()
+        player = Mock()
+        player.OutputStream.return_value = stream
+        first = numpy.array([0.1, 0.2], dtype=numpy.float32)
+        second = numpy.array([0.3, 0.4], dtype=numpy.float32)
+
+        def generated_chunks():
+            yield ("Hello", "hello", first)
+            self.assertEqual(len(stream.written), 1)
+            yield (" there.", "there", second)
+
+        with patch.object(assistant, "_kokoro_pipeline", Mock(return_value=generated_chunks())):
+            assistant._speak_with_kokoro("Hello there.", player=player)
+
+        self.assertEqual(len(stream.written), 2)
+        numpy.testing.assert_array_equal(stream.written[0], first.reshape(-1, 1))
+        numpy.testing.assert_array_equal(stream.written[1], second.reshape(-1, 1))
+
+    def test_speak_text_reports_when_local_and_cloud_engines_fail(self):
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}), patch.object(
+            assistant, "_kokoro_pipeline", None
+        ):
+            with self.assertRaisesRegex(AssistantError, "local CPU Kokoro and Google Gemini TTS"):
                 speak_text(
                     "Hello there.",
-                    gemini_audio_factory=Mock(side_effect=RuntimeError("cloud unavailable")),
                     kokoro_pipeline_factory=Mock(side_effect=RuntimeError("Kokoro unavailable")),
+                    gemini_audio_factory=Mock(side_effect=RuntimeError("cloud unavailable")),
                 )
 
 

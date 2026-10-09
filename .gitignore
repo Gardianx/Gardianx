@@ -3,6 +3,9 @@ __pycache__/
 .venv/
 .venv-*/
 venv/
+.env
+.env.*
+!.env.example
 web/node_modules/
 web/dist/
 gui_actions.log

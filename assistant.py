@@ -5,17 +5,18 @@ import io
 import json
 import math
 import os
+import sys
 import threading
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any
+from typing import Any, Callable
 
 
-DEFAULT_PROVIDER = "groq"
+DEFAULT_PROVIDER = "google"
 DEFAULT_MODELS = {
-    "groq": "llama-3.3-70b-versatile",
-    "google": "gemini-3.8-flash",
+    "groq": "llama-3.1-8b-instant",
+    "google": "gemini-2.5-flash-lite",
 }
 PROVIDER_ENV_VARS = {
     "groq": ("GROQ_API_KEY",),
@@ -27,6 +28,66 @@ GEMINI_TTS_VOICE = "Kore"
 TTS_SAMPLE_RATE = 24000
 _kokoro_lock = threading.Lock()
 _kokoro_pipeline = None
+
+
+def _response_field(value: Any, name: str, default: Any = None) -> Any:
+    if isinstance(value, dict):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+def _response_debug_text(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, indent=2, default=repr)
+    except (TypeError, ValueError):
+        return repr(value)
+
+
+def _extract_text_parts(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [
+            text_part
+            for item in value
+            for text_part in _extract_text_parts(item)
+        ]
+    text = _response_field(value, "text")
+    if isinstance(text, str) and text.strip():
+        return [text]
+
+    parts = _response_field(value, "parts")
+    if isinstance(parts, list):
+        return [
+            text_part
+            for part in parts
+            for text_part in _extract_text_parts(part)
+        ]
+
+    content = _response_field(value, "content")
+    if content is not None:
+        return _extract_text_parts(content)
+
+    candidates = _response_field(value, "candidates")
+    if isinstance(candidates, list):
+        return [
+            text_part
+            for candidate in candidates
+            for text_part in _extract_text_parts(candidate)
+        ]
+    return []
+
+
+def _extract_google_text(response: Any) -> str:
+    for field in ("output_text", "text"):
+        content = _response_field(response, field)
+        if isinstance(content, str) and content.strip():
+            return content
+
+    return "".join(
+        text
+        for field in ("candidates", "content", "steps", "output")
+        for text in _extract_text_parts(_response_field(response, field))
+    )
+
 
 INTENT_SCHEMA = {
     "type": "object",
@@ -96,6 +157,7 @@ class HostedChatClient:
         *,
         timeout_seconds: float = 120.0,
         opener=urllib.request.urlopen,
+        debug_responses: bool = False,
     ) -> None:
         provider = provider.strip().lower()
         if provider not in DEFAULT_MODELS:
@@ -110,6 +172,15 @@ class HostedChatClient:
         self.api_key = api_key or self._environment_api_key(provider)
         self.timeout_seconds = timeout_seconds
         self._opener = opener
+        self.debug_responses = debug_responses
+
+    def _debug_response(self, stage: str, response: Any) -> None:
+        if self.debug_responses:
+            print(
+                f"Raw {self.provider} response ({stage}):\n"
+                f"{_response_debug_text(response)}",
+                file=sys.stderr,
+            )
 
     @staticmethod
     def _environment_api_key(provider: str) -> str:
@@ -207,26 +278,21 @@ class HostedChatClient:
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise AssistantError(f"{self.provider} returned an invalid response.") from error
 
-        if not isinstance(payload, dict):
+        if self.provider == "groq" and not isinstance(payload, dict):
+            self._debug_response("invalid response object", payload)
             raise AssistantError(f"{self.provider} returned an invalid response object.")
-        if payload.get("error"):
-            raise AssistantError(f"{self.provider} API error: {payload['error']}")
+        response_error = _response_field(payload, "error")
+        if response_error:
+            raise AssistantError(f"{self.provider} API error: {response_error}")
         if self.provider == "groq":
-            choices = payload.get("choices")
+            choices = _response_field(payload, "choices")
             choice = choices[0] if isinstance(choices, list) and choices else {}
-            message = choice.get("message") if isinstance(choice, dict) else None
-            content = message.get("content") if isinstance(message, dict) else None
+            message = _response_field(choice, "message")
+            content = _response_field(message, "content")
         else:
-            candidates = payload.get("candidates")
-            candidate = candidates[0] if isinstance(candidates, list) and candidates else {}
-            response_content = candidate.get("content") if isinstance(candidate, dict) else None
-            parts = response_content.get("parts") if isinstance(response_content, dict) else None
-            content = (
-                "".join(part.get("text", "") for part in parts if isinstance(part, dict))
-                if isinstance(parts, list)
-                else None
-            )
+            content = _extract_google_text(payload)
         if not isinstance(content, str) or not content.strip():
+            self._debug_response("text extraction failed", payload)
             raise AssistantError(f"{self.provider} returned an empty response.")
         return content.strip()
 
@@ -257,13 +323,27 @@ class ConversationalAssistant:
         try:
             parsed = json.loads(content)
         except json.JSONDecodeError as error:
+            if getattr(self.client, "debug_responses", False):
+                self.client._debug_response("intent JSON parsing failed", content)
             raise AssistantError("Intent parser returned malformed JSON.") from error
-        return self._validate_intent(parsed)
+        try:
+            return self._validate_intent(parsed)
+        except AssistantError:
+            if getattr(self.client, "debug_responses", False):
+                self.client._debug_response("intent validation failed", parsed)
+            raise
 
     @staticmethod
     def _validate_intent(value: Any) -> dict[str, Any]:
-        if not isinstance(value, dict) or set(value) != set(INTENT_SCHEMA["required"]):
+        if not isinstance(value, dict) or "intent" not in value:
             raise AssistantError("Intent parser returned an invalid response shape.")
+        optional_fields = set(INTENT_SCHEMA["required"]) - {"intent"}
+        normalized = {
+            field: value.get(field)
+            for field in optional_fields
+        }
+        normalized["intent"] = value["intent"]
+        value = normalized
         if value["intent"] not in {
             "chat",
             "status",
@@ -458,8 +538,31 @@ def _gemini_speech_audio(text: str) -> bytes:
                 "speech_config": [{"voice": GEMINI_TTS_VOICE}],
             },
         )
-        audio_data = response.output_audio.data
+        output_audio = _response_field(response, "output_audio")
+        audio_data = _response_field(output_audio, "data")
+        if not isinstance(audio_data, str) or not audio_data:
+            steps = _response_field(response, "steps", [])
+            if isinstance(steps, list):
+                for step in steps:
+                    parts = _response_field(step, "content", [])
+                    if not isinstance(parts, list):
+                        continue
+                    audio_part = next(
+                        (
+                            part
+                            for part in parts
+                            if _response_field(part, "type") == "audio"
+                        ),
+                        None,
+                    )
+                    audio_data = _response_field(audio_part, "data")
+                    if isinstance(audio_data, str) and audio_data:
+                        break
+        if not isinstance(audio_data, str) or not audio_data:
+            raise AssistantError("Google Gemini returned no audio data.")
         return base64.b64decode(audio_data, validate=True)
+    except AssistantError:
+        raise
     except Exception as error:
         raise AssistantError("Google Gemini speech generation failed.") from error
 
@@ -500,10 +603,61 @@ def _speak_with_kokoro(text: str, *, pipeline_factory=None, player=None) -> None
             "Kokoro playback requires numpy. Install `requirements-assistant-voice.txt`."
         ) from error
     pipeline = _get_kokoro_pipeline(pipeline_factory)
-    chunks = [audio for _, _, audio in pipeline(text, voice="af_heart")]
-    if not chunks:
+    if player is None:
+        try:
+            import sounddevice
+        except ImportError as error:
+            raise AssistantError(
+                "Audio playback requires sounddevice. Install "
+                "`requirements-assistant-voice.txt`."
+            ) from error
+        player = sounddevice
+
+    stream = None
+    stream_started = False
+    chunks_written = 0
+    try:
+        for _, _, audio in pipeline(text, voice="af_heart"):
+            audio_chunk = numpy.asarray(audio, dtype=numpy.float32).reshape(-1, 1)
+            if not audio_chunk.shape[0]:
+                continue
+            if stream is None:
+                stream = player.OutputStream(
+                    samplerate=TTS_SAMPLE_RATE,
+                    channels=1,
+                    dtype="float32",
+                )
+                stream.start()
+                stream_started = True
+            stream.write(audio_chunk)
+            chunks_written += 1
+    finally:
+        if stream is not None:
+            if stream_started:
+                stream.stop()
+            stream.close()
+
+    if not chunks_written:
         raise AssistantError("Kokoro did not generate any speech audio.")
-    _play_audio(numpy.concatenate(chunks), player=player)
+
+
+def speak_text_local(
+    text: str,
+    *,
+    kokoro_pipeline_factory=None,
+    player=None,
+) -> None:
+    """Speak with the local CPU Kokoro engine only."""
+    if not text.strip():
+        return
+    try:
+        _speak_with_kokoro(
+            text,
+            pipeline_factory=kokoro_pipeline_factory,
+            player=player,
+        )
+    except Exception as error:
+        raise AssistantError("Local CPU Kokoro speech output failed.") from error
 
 
 def speak_text(
@@ -513,37 +667,44 @@ def speak_text(
     audio_decoder=None,
     kokoro_pipeline_factory=None,
     player=None,
+    on_local_failure: Callable[[], None] | None = None,
 ) -> None:
-    """Speak with Gemini TTS when configured, falling back to CPU-only Kokoro."""
+    """Prefer local CPU Kokoro, then use Gemini TTS if local speech fails."""
     if not text.strip():
         return
-    errors = []
-    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip() or os.environ.get(
-        "GOOGLE_API_KEY", ""
-    ).strip()
-    if gemini_key:
-        try:
-            audio = (
-                gemini_audio_factory(text)
-                if gemini_audio_factory is not None
-                else _gemini_speech_audio(text)
-            )
-            audio_data, sample_rate = (
-                audio_decoder(audio)
-                if audio_decoder is not None
-                else _decode_audio(audio)
-            )
-            _play_audio(audio_data, sample_rate, player=player)
-            return
-        except Exception as error:
-            errors.append(error)
+    local_error: Exception
     try:
         _speak_with_kokoro(
             text,
             pipeline_factory=kokoro_pipeline_factory,
             player=player,
         )
-    except Exception as fallback_error:
+        return
+    except Exception as error:
+        local_error = error
+        if on_local_failure is not None:
+            on_local_failure()
+
+    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip() or os.environ.get(
+        "GOOGLE_API_KEY", ""
+    ).strip()
+    if not gemini_key and gemini_audio_factory is None:
         raise AssistantError(
-            "Speech output failed: Gemini TTS and local CPU Kokoro are unavailable."
-        ) from fallback_error
+            "Local CPU Kokoro speech failed and Google Gemini TTS is not configured."
+        ) from local_error
+    try:
+        audio = (
+            gemini_audio_factory(text)
+            if gemini_audio_factory is not None
+            else _gemini_speech_audio(text)
+        )
+        audio_data, sample_rate = (
+            audio_decoder(audio)
+            if audio_decoder is not None
+            else _decode_audio(audio)
+        )
+        _play_audio(audio_data, sample_rate, player=player)
+    except Exception as cloud_error:
+        raise AssistantError(
+            "Speech output failed: local CPU Kokoro and Google Gemini TTS are unavailable."
+        ) from cloud_error

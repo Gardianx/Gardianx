@@ -1,5 +1,6 @@
 # Groq Cloud and Google AI Studio use their HTTPS REST APIs from the Python
 # standard library; install no local language model or provider SDK.
+python-dotenv
 
 # CPU-friendly local speech recognition.
 faster-whisper
