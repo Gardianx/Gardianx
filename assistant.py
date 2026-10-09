@@ -1,8 +1,11 @@
 """Hosted conversational APIs with local speech transcription."""
 
+import base64
+import io
 import json
 import math
 import os
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -12,13 +15,18 @@ from typing import Any
 DEFAULT_PROVIDER = "groq"
 DEFAULT_MODELS = {
     "groq": "llama-3.3-70b-versatile",
-    "google": "gemini-2.5-flash",
+    "google": "gemini-3.8-flash",
 }
 PROVIDER_ENV_VARS = {
     "groq": ("GROQ_API_KEY",),
     "google": ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
 }
 MAX_HISTORY_MESSAGES = 20
+GEMINI_TTS_MODEL = "gemini-3.8-flash-tts"
+GEMINI_TTS_VOICE = "Kore"
+TTS_SAMPLE_RATE = 24000
+_kokoro_lock = threading.Lock()
+_kokoro_pipeline = None
 
 INTENT_SCHEMA = {
     "type": "object",
@@ -404,21 +412,138 @@ def search_web(query: str, *, max_results: int = 5) -> list[dict[str, str]]:
         raise AssistantError("Online lookup failed; check the internet connection.") from error
 
 
-def speak_text(text: str, *, engine_factory=None) -> None:
-    """Speak a response locally using the operating system's configured voice."""
-    if not text.strip():
-        return
-    if engine_factory is None:
+def _get_kokoro_pipeline(pipeline_factory=None):
+    global _kokoro_pipeline
+    if _kokoro_pipeline is None:
+        with _kokoro_lock:
+            if _kokoro_pipeline is None:
+                if pipeline_factory is None:
+                    try:
+                        from kokoro import KPipeline
+                    except ImportError as error:
+                        raise AssistantError(
+                            "Local speech requires Kokoro. Install "
+                            "`requirements-assistant-voice.txt` with Python 3.12."
+                        ) from error
+                    pipeline_factory = KPipeline
+                _kokoro_pipeline = pipeline_factory(lang_code="a", device="cpu")
+    return _kokoro_pipeline
+
+
+def _gemini_speech_audio(text: str) -> bytes:
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip() or os.environ.get(
+        "GOOGLE_API_KEY", ""
+    ).strip()
+    if not api_key:
+        raise AssistantError("Google Gemini TTS is not configured.")
+    try:
+        from google import genai
+    except ImportError as error:
+        raise AssistantError(
+            "Google Gemini TTS requires google-genai. Install "
+            "`requirements-assistant-voice.txt`."
+        ) from error
+    try:
+        client = genai.Client(api_key=api_key)
+        response = client.interactions.create(
+            model=os.environ.get("GEMINI_TTS_MODEL", GEMINI_TTS_MODEL),
+            input=[
+                {
+                    "type": "user_input",
+                    "content": [{"type": "text", "text": text}],
+                }
+            ],
+            response_format={"type": "audio"},
+            generation_config={
+                "speech_config": [{"voice": GEMINI_TTS_VOICE}],
+            },
+        )
+        audio_data = response.output_audio.data
+        return base64.b64decode(audio_data, validate=True)
+    except Exception as error:
+        raise AssistantError("Google Gemini speech generation failed.") from error
+
+
+def _play_audio(audio, sample_rate: int = TTS_SAMPLE_RATE, *, player=None) -> None:
+    if player is None:
         try:
-            import pyttsx3
+            import sounddevice
         except ImportError as error:
             raise AssistantError(
-                "Spoken replies require pyttsx3. Install `requirements-assistant.txt`."
+                "Audio playback requires sounddevice. Install "
+                "`requirements-assistant-voice.txt`."
             ) from error
-        engine_factory = pyttsx3.init
+        player = sounddevice
+    player.play(audio, sample_rate)
+    player.wait()
+
+
+def _decode_audio(audio_bytes: bytes):
     try:
-        engine = engine_factory()
-        engine.say(text)
-        engine.runAndWait()
+        import soundfile
+    except ImportError as error:
+        raise AssistantError(
+            "Gemini audio playback requires soundfile. Install "
+            "`requirements-assistant-voice.txt`."
+        ) from error
+    try:
+        return soundfile.read(io.BytesIO(audio_bytes), dtype="float32")
     except Exception as error:
-        raise AssistantError("Could not play the spoken assistant response.") from error
+        raise AssistantError("Could not decode generated Gemini audio.") from error
+
+
+def _speak_with_kokoro(text: str, *, pipeline_factory=None, player=None) -> None:
+    try:
+        import numpy
+    except ImportError as error:
+        raise AssistantError(
+            "Kokoro playback requires numpy. Install `requirements-assistant-voice.txt`."
+        ) from error
+    pipeline = _get_kokoro_pipeline(pipeline_factory)
+    chunks = [audio for _, _, audio in pipeline(text, voice="af_heart")]
+    if not chunks:
+        raise AssistantError("Kokoro did not generate any speech audio.")
+    _play_audio(numpy.concatenate(chunks), player=player)
+
+
+def speak_text(
+    text: str,
+    *,
+    gemini_audio_factory=None,
+    audio_decoder=None,
+    kokoro_pipeline_factory=None,
+    player=None,
+) -> None:
+    """Speak with Gemini TTS when configured, falling back to CPU-only Kokoro."""
+    if not text.strip():
+        return
+    errors = []
+    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip() or os.environ.get(
+        "GOOGLE_API_KEY", ""
+    ).strip()
+    if gemini_key:
+        try:
+            audio = (
+                gemini_audio_factory(text)
+                if gemini_audio_factory is not None
+                else _gemini_speech_audio(text)
+            )
+            audio_data, sample_rate = (
+                audio_decoder(audio)
+                if audio_decoder is not None
+                else _decode_audio(audio)
+            )
+            _play_audio(audio_data, sample_rate, player=player)
+            return
+        except Exception as error:
+            errors.append(error)
+    try:
+        _speak_with_kokoro(
+            text,
+            pipeline_factory=kokoro_pipeline_factory,
+            player=player,
+        )
+    except Exception as fallback_error:
+        raise AssistantError(
+            "Speech output failed: Gemini TTS and local CPU Kokoro are unavailable."
+        ) from fallback_error

@@ -233,6 +233,26 @@ The optional terminal client remains available as `nlp_assistant.py`; it uses
 the same provider environment keys and local speech packages. It is not
 required for the deployed app.
 
+For local speech output, use Python 3.12 because the current Kokoro release
+requires Python below 3.13. Install the assistant and voice dependencies in a
+separate virtual environment:
+
+```powershell
+py -3.12 -m venv .venv-voice
+.\.venv-voice\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+.\.venv-voice\Scripts\python.exe -m pip install -r requirements-assistant.txt -r requirements-assistant-voice.txt
+```
+
+Install the Windows `espeak-ng` runtime using its official installer as
+described in the [Kokoro installation guide](https://github.com/hexgrad/kokoro#-windows-installation).
+Set `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) to enable Gemini TTS as the
+preferred speech generator; when unset or unavailable, speech uses Kokoro
+locally. Kokoro is explicitly initialized with `device="cpu"` and Whisper
+uses `device="cpu", compute_type="int8"`, so neither speech model uses GPU
+VRAM. The CPU PyTorch wheel avoids installing CUDA-enabled PyTorch in this
+environment. The Google TTS request sends the text to Google's cloud; Kokoro
+fallback runs locally.
+
 ## Prepare a local vision-language model dataset
 
 The broker UI detector still uses YOLO until a VLM checkpoint and an adapter

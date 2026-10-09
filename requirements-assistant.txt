@@ -5,7 +5,6 @@
 faster-whisper
 sounddevice
 numpy
-pyttsx3
 
 # Only used when the explicit --allow-web-search option is enabled.
 ddgs

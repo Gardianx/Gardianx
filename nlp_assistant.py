@@ -54,7 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--speak",
         action="store_true",
-        help="Speak assistant replies using the local Windows speech engine.",
+        help="Speak with Gemini TTS when configured, falling back to CPU Kokoro.",
     )
     return parser
 
